@@ -19,10 +19,7 @@ app = FastAPI()
 # CORS設定
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -109,4 +106,5 @@ def register_order(order: OrderRequest):
     except Exception as e:
         print("❌ 注文登録エラー:", e)
         return {"error": str(e)}
+
 

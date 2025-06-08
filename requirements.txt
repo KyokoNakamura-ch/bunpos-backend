@@ -1,5 +1,5 @@
 fastapi
-uvicorn
-gunicorn
+uvicorn==0.29.0
+gunicorn==21.2.0
 python-dotenv
 mysql-connector-python

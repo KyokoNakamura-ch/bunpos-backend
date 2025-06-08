@@ -5,15 +5,18 @@ from typing import List
 from pydantic import BaseModel
 import mysql.connector
 import os
-from dotenv import load_dotenv
 
-# .env 読み込み
-load_dotenv()
+# ✅ ローカル開発時のみ .env を読み込む（AzureではApp Serviceの環境変数を使う）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except:
+    pass
 
-# ✅ FastAPIのインスタンスをまず作る！
+# FastAPIインスタンス作成
 app = FastAPI()
 
-# ✅ CORS設定をそのあとに追加！
+# CORS設定
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -24,9 +27,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# .env 読み込み
-load_dotenv()
 
 # モデル定義
 class OrderItem(BaseModel):
@@ -42,19 +42,27 @@ class OrderRequest(BaseModel):
     storeCd: str = "30"
     posNo: str = "90"
 
+# 共通：MySQL接続関数（SSLの有無を切り替え）
+def get_connection():
+    ssl_ca_path = os.getenv("SSL_CA_PATH")
+    conn_args = {
+        "host": os.getenv("DB_HOST"),
+        "user": os.getenv("DB_USER"),
+        "password": os.getenv("DB_PASSWORD"),
+        "database": os.getenv("DB_NAME"),
+    }
+    if ssl_ca_path:
+        conn_args["ssl_ca"] = ssl_ca_path
+
+    return mysql.connector.connect(**conn_args)
+
+# 商品取得API
 @app.get("/product")
 def get_product_by_code(code: str):
     try:
-        conn = mysql.connector.connect(
-            host=os.getenv("DB_HOST"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            database=os.getenv("DB_NAME"),
-            ssl_ca=os.getenv("SSL_CA_PATH")
-        )
+        conn = get_connection()
         cursor = conn.cursor(dictionary=True)
 
-        # ✅ カラム名・テーブル名を実際に合わせたよ！
         cursor.execute("SELECT name, price FROM product_master WHERE code = %s", (code,))
         row = cursor.fetchone()
 
@@ -70,35 +78,22 @@ def get_product_by_code(code: str):
         print("❌ 商品取得エラー:", e)
         return JSONResponse(status_code=500, content={"message": str(e)})
 
+# 注文登録API
 @app.post("/order")
 def register_order(order: OrderRequest):
     try:
-        # ✅ 接続前にログ出して確認
-        print("Connecting to DB with:")
-        print("HOST:", os.getenv("DB_HOST"))
-        print("USER:", os.getenv("DB_USER"))
-        print("DB  :", os.getenv("DB_NAME"))
-        print("SSL :", os.getenv("SSL_CA_PATH"))
+        print("Connecting to DB with:", os.getenv("DB_HOST"))
 
-        conn = mysql.connector.connect(
-            host=os.getenv("DB_HOST"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            database=os.getenv("DB_NAME"),
-            ssl_ca=os.getenv("SSL_CA_PATH")
-        )
-        print("✅ 接続成功")
-
+        conn = get_connection()
         cursor = conn.cursor()
 
-        # 注文テーブルに追加
+        # 注文登録
         cursor.execute(
             "INSERT INTO 取引 (DATETIME, EMP_CD, STORE_CD, POS_NO, TOTAL_AMT) VALUES (NOW(), %s, %s, %s, %s)",
             (order.empCd, order.storeCd, order.posNo, order.totalAmount)
         )
         trd_id = cursor.lastrowid
 
-        # 注文明細を追加
         for item in order.items:
             cursor.execute(
                 "INSERT INTO 取引明細 (TRD_ID, DTL_ID, PRD_CODE, PRD_NAME, PRD_PRICE) VALUES (%s, %s, %s, %s, %s)",
@@ -112,6 +107,6 @@ def register_order(order: OrderRequest):
         return {"message": "注文を登録しました", "orderId": trd_id}
 
     except Exception as e:
-        print("❌ エラー発生：", e)
+        print("❌ 注文登録エラー:", e)
         return {"error": str(e)}
 

@@ -4,4 +4,9 @@ fastapi
 uvicorn==0.29.0
 gunicorn==21.2.0
 python-dotenv
-supabase-py
+supabase
+httpx
+gotrue
+postgrest
+realtime
+storage3

@@ -3,15 +3,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import List
 from pydantic import BaseModel
-import mysql.connector
 import os
+from datetime import datetime
 
-# ✅ ローカル開発時のみ .env を読み込む（AzureではApp Serviceの環境変数を使う）
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except:
-    pass
+# .env 読み込み（ローカル用）
+from dotenv import load_dotenv
+load_dotenv()
+
+# Supabaseクライアント
+from supabase import create_client, Client
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+
+if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+    raise RuntimeError("SUPABASE_URL または SUPABASE_ANON_KEY が環境変数に見つかりません")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 # FastAPIインスタンス作成
 app = FastAPI()
@@ -39,40 +47,23 @@ class OrderRequest(BaseModel):
     storeCd: str = "30"
     posNo: str = "90"
 
-# 共通：MySQL接続関数（SSLの有無を切り替え）
-def get_connection():
-    ssl_ca_path = os.getenv("SSL_CA_PATH")
-    conn_args = {
-        "host": os.getenv("DB_HOST"),
-        "user": os.getenv("DB_USER"),
-        "password": os.getenv("DB_PASSWORD"),
-        "database": os.getenv("DB_NAME"),
-        "use_pure": True,           # ← 追加
-        "unix_socket": None         # ← 追加（パイプ接続を防ぐ）
-    }
-    if ssl_ca_path:
-        conn_args["ssl_ca"] = ssl_ca_path
-
-    return mysql.connector.connect(**conn_args)
-
 # 商品取得API
 @app.get("/product")
 def get_product_by_code(code: str):
     try:
-        conn = get_connection()
-        cursor = conn.cursor(dictionary=True)
-
-        cursor.execute("SELECT name, price FROM product_master WHERE code = %s", (code,))
-        row = cursor.fetchone()
-
-        cursor.close()
-        conn.close()
-
-        if row:
-            return row
+        code = code.strip()
+        print(f"🔍 検索コード: [{code}]")
+        response = (
+            supabase.table("product_master")
+            .select("name, price")
+            .ilike("code", code)
+            .limit(1)
+            .execute()
+        )
+        if response.data:
+            return response.data[0]  # limit(1)なので1件のみ
         else:
             return JSONResponse(status_code=404, content={"message": "商品が見つかりません"})
-
     except Exception as e:
         print("❌ 商品取得エラー:", e)
         return JSONResponse(status_code=500, content={"message": str(e)})
@@ -81,32 +72,31 @@ def get_product_by_code(code: str):
 @app.post("/order")
 def register_order(order: OrderRequest):
     try:
-        print("Connecting to DB with:", os.getenv("DB_HOST"))
+        now = datetime.utcnow().isoformat()
 
-        conn = get_connection()
-        cursor = conn.cursor()
+        # 取引登録
+        trd_result = supabase.table("transactions").insert({
+            "datetime": now,
+            "emp_cd": order.empCd,
+            "store_cd": order.storeCd,
+            "pos_no": order.posNo,
+            "total_amt": order.totalAmount
+        }).execute()
 
-        # 注文登録
-        cursor.execute(
-            "INSERT INTO 取引 (DATETIME, EMP_CD, STORE_CD, POS_NO, TOTAL_AMT) VALUES (NOW(), %s, %s, %s, %s)",
-            (order.empCd, order.storeCd, order.posNo, order.totalAmount)
-        )
-        trd_id = cursor.lastrowid
+        trd_id = trd_result.data[0]["id"]
 
+        # 明細登録
         for item in order.items:
-            cursor.execute(
-                "INSERT INTO 取引明細 (TRD_ID, DTL_ID, PRD_CODE, PRD_NAME, PRD_PRICE) VALUES (%s, %s, %s, %s, %s)",
-                (trd_id, item.detailId, item.code, item.name, item.price)
-            )
-
-        conn.commit()
-        cursor.close()
-        conn.close()
+            supabase.table("transaction_details").insert({
+                "transaction_id": trd_id,
+                "detail_id": item.detailId,
+                "product_code": item.code,
+                "product_name": item.name,
+                "product_price": item.price
+            }).execute()
 
         return {"message": "注文を登録しました", "orderId": trd_id}
 
     except Exception as e:
         print("❌ 注文登録エラー:", e)
-        return {"error": str(e)}
-
-
+        return JSONResponse(status_code=500, content={"error": str(e)})
